@@ -46,6 +46,11 @@ const settings = definePluginSettings({
         default: true,
         restartNeeded: true
     },
+    runInParallel: {
+        type: OptionType.BOOLEAN,
+        description: "Run quests at the same time instead of one after another. Much faster when you have several quests, but a little riskier: Discord sees several games running at once. Stream quests still go one at a time.",
+        default: false
+    },
     showProgressToasts: {
         type: OptionType.BOOLEAN,
         description: "Show a toast every time a quest's progress goes up (start / finish toasts are always shown)",
@@ -62,13 +67,14 @@ const QuestsStore: { quests: Map<string, any>; } = findLazy(m =>
 
 interface RunState {
     running: boolean;
+    /** Every quest being worked on right now with its progress, e.g. "Quest A 40%, Quest B 12%". */
     current: string | null;
-    detail: string;
     done: number;
     total: number;
 }
 
-let state: RunState = { running: false, current: null, detail: "", done: 0, total: 0 };
+let state: RunState = { running: false, current: null, done: 0, total: 0 };
+const activeQuests = new Map<string, string>();
 let abortController: AbortController | null = null;
 /** Undo functions for every Discord method we have swapped out. Always drained on stop. */
 const cleanups = new Set<() => void>();
@@ -77,6 +83,12 @@ const listeners = new Set<() => void>();
 function setState(patch: Partial<RunState>) {
     state = { ...state, ...patch };
     listeners.forEach(l => l());
+}
+
+function setQuestProgress(quest: any, pct: string | null) {
+    if (pct == null) activeQuests.delete(quest.id);
+    else activeQuests.set(quest.id, `${questName(quest)} ${pct}`);
+    setState({ current: activeQuests.size ? [...activeQuests.values()].join(", ") : null });
 }
 
 function useRunState() {
@@ -181,7 +193,7 @@ function progressFromHeartbeat(quest: any, task: TaskName, data: any): number {
 
 function reportProgress(quest: any, progress: number, needed: number) {
     const pct = Math.min(100, Math.floor(progress / needed * 100));
-    setState({ detail: `${pct}%` });
+    setQuestProgress(quest, `${pct}%`);
     if (settings.store.showProgressToasts) toast(`${questName(quest)}: ${pct}%`);
 }
 
@@ -249,6 +261,39 @@ function waitForHeartbeats(quest: any, task: TaskName, needed: number, signal: A
     });
 }
 
+// Every play quest in progress adds its game here. Discord is shown all of them at once,
+// so several play quests can progress together without overwriting each other.
+const fakeGames = new Map<string, any>();
+let realGetRunningGames: (() => any[]) | null = null;
+let realGetGameForPID: ((pid: number) => any) | null = null;
+
+function addFakeGame(questId: string, game: any) {
+    const store = RunningGameStore as any;
+    let removed: any[] = [];
+    if (fakeGames.size === 0) {
+        removed = store.getRunningGames();
+        realGetRunningGames = store.getRunningGames;
+        realGetGameForPID = store.getGameForPID;
+        store.getRunningGames = () => [...fakeGames.values()];
+        store.getGameForPID = (pid: number) => [...fakeGames.values()].find(g => g.pid === pid) ?? null;
+    }
+    fakeGames.set(questId, game);
+    FluxDispatcher.dispatch({ type: "RUNNING_GAMES_CHANGE", removed, added: [game], games: [...fakeGames.values()] } as any);
+}
+
+function removeFakeGame(questId: string) {
+    const game = fakeGames.get(questId);
+    if (!game) return;
+    fakeGames.delete(questId);
+    const store = RunningGameStore as any;
+    if (fakeGames.size === 0) {
+        store.getRunningGames = realGetRunningGames;
+        store.getGameForPID = realGetGameForPID;
+        realGetRunningGames = realGetGameForPID = null;
+    }
+    FluxDispatcher.dispatch({ type: "RUNNING_GAMES_CHANGE", removed: [game], added: [], games: store.getRunningGames() } as any);
+}
+
 async function doPlay(quest: any, needed: number, done: number, signal: AbortSignal) {
     const appId = getQuestAppId(quest, "PLAY_ON_DESKTOP");
     const res = await request("get", { url: `/applications/public?application_ids=${appId}` }, signal);
@@ -272,23 +317,8 @@ async function doPlay(quest: any, needed: number, done: number, signal: AbortSig
         start: Date.now()
     };
 
-    const store = RunningGameStore as any;
-    const realGames = store.getRunningGames();
-    const realGetRunningGames = store.getRunningGames;
-    const realGetGameForPID = store.getGameForPID;
-
-    store.getRunningGames = () => [fakeGame];
-    store.getGameForPID = (p: number) => p === pid ? fakeGame : null;
-    FluxDispatcher.dispatch({ type: "RUNNING_GAMES_CHANGE", removed: realGames, added: [fakeGame], games: [fakeGame] } as any);
-
-    let restored = false;
-    const restore = () => {
-        if (restored) return;
-        restored = true;
-        store.getRunningGames = realGetRunningGames;
-        store.getGameForPID = realGetGameForPID;
-        FluxDispatcher.dispatch({ type: "RUNNING_GAMES_CHANGE", removed: [fakeGame], added: [], games: realGetRunningGames.call(store) } as any);
-    };
+    addFakeGame(quest.id, fakeGame);
+    const restore = () => removeFakeGame(quest.id);
     cleanups.add(restore);
 
     toast(`${questName(quest)}: pretending to play ${app.name} for ~${Math.ceil((needed - done) / 60)} min`);
@@ -365,7 +395,7 @@ async function runQuest(quest: any, signal: AbortSignal) {
     const needed: number = getTaskConfig(quest).tasks[task].target;
     const done: number = quest.userStatus?.progress?.[task]?.value ?? 0;
 
-    setState({ current: questName(quest), detail: `${Math.floor(done / needed * 100)}%` });
+    setQuestProgress(quest, `${Math.floor(done / needed * 100)}%`);
     logger.info(`Starting ${questName(quest)} (${task}) ${done}/${needed}s`);
 
     switch (task) {
@@ -403,23 +433,40 @@ async function start() {
 
     const controller = abortController = new AbortController();
     const { signal } = controller;
-    setState({ running: true, current: null, detail: "", done: 0, total: quests.length });
-    toast(`Activated for ${quests.length} accepted quest${quests.length === 1 ? "" : "s"}: ${quests.map(questName).join(", ")}`, "success");
+    const parallel = settings.store.runInParallel && quests.length > 1;
+    setState({ running: true, current: null, done: 0, total: quests.length });
+    toast(`Activated for ${quests.length} accepted quest${quests.length === 1 ? "" : "s"}${parallel ? " (all at the same time)" : ""}: ${quests.map(questName).join(", ")}`, "success");
 
     let completed = 0;
+    // Only an abort escapes; any other failure is reported and the rest carry on.
+    const runOne = async (quest: any) => {
+        try {
+            await runQuest(quest, signal);
+            completed++;
+            setState({ done: completed });
+            toast(`✅ ${questName(quest)} completed`, "success");
+        } catch (err) {
+            if (err instanceof Aborted) throw err;
+            logger.error(`Failed ${questName(quest)}`, err);
+            toast(`❌ ${questName(quest)}: ${errorText(err)}`, "critical");
+        } finally {
+            setQuestProgress(quest, null);
+        }
+    };
+
     try {
-        for (const quest of quests) {
-            try {
-                await runQuest(quest, signal);
-                completed++;
-                setState({ done: completed });
-                toast(`✅ ${questName(quest)} completed`, "success");
-            } catch (err) {
-                if (err instanceof Aborted) throw err;
-                logger.error(`Failed ${questName(quest)}`, err);
-                toast(`❌ ${questName(quest)}: ${errorText(err)}`, "critical");
+        if (parallel) {
+            // Discord tracks a single active stream, so stream quests take turns in one lane.
+            const streams = quests.filter(q => getTaskName(q) === "STREAM_ON_DESKTOP");
+            const lanes = quests.filter(q => !streams.includes(q)).map(q => () => runOne(q));
+            if (streams.length) lanes.push(async () => { for (const q of streams) await runOne(q); });
+            await Promise.allSettled(lanes.map(lane => lane()));
+            if (signal.aborted) throw new Aborted();
+        } else {
+            for (const quest of quests) {
+                await runOne(quest);
+                if (quest !== quests[quests.length - 1]) await sleep(BETWEEN_QUESTS_DELAY, signal);
             }
-            if (quest !== quests[quests.length - 1]) await sleep(BETWEEN_QUESTS_DELAY, signal);
         }
         toast(`Finished: ${completed}/${quests.length} quest${quests.length === 1 ? "" : "s"} completed. Turned off. Go claim your rewards!`, "success");
     } catch (err) {
@@ -430,7 +477,8 @@ async function start() {
     } finally {
         if (abortController === controller) abortController = null;
         runCleanups();
-        setState({ running: false, current: null, detail: "" });
+        activeQuests.clear();
+        setState({ running: false, current: null });
     }
 }
 
@@ -450,7 +498,7 @@ function onButtonClick() {
     if (!state.running) return void start();
     Alerts.show({
         title: "Stop completing quests?",
-        body: `Currently on: ${state.current ?? "…"} (${state.detail}). Progress already made is kept by Discord.`,
+        body: `Currently on: ${state.current ?? "…"}. Progress already made is kept by Discord.`,
         confirmText: "Stop",
         cancelText: "Keep going",
         onConfirm: stop
@@ -476,7 +524,7 @@ function QuestButton(props: { nameplate?: any; }) {
     const s = useRunState();
 
     const tooltip = s.running
-        ? `Quests ON (${s.done}/${s.total}): ${s.current ?? "…"} ${s.detail}. Click to stop.`
+        ? `Quests ON (${s.done}/${s.total} done): ${s.current ?? "…"}. Click to stop.`
         : "Complete accepted quests";
 
     if (!(PanelButton as any).$$vencordGetWrappedComponent?.()) {

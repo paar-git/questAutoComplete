@@ -9,6 +9,12 @@ Adds a button next to Mute/Deafen, beside FakeDeafen and MOM FBI (also in the Ve
 
 The button can be hidden in the plugin settings ("Show the quest button next to Mute/Deafen").
 
+### Running quests at the same time
+
+By default quests run one after another, so two 15-minute play quests take 30 minutes. Turn on **"Run quests at the same time"** in the plugin settings to run them together: Discord is shown all the quest games running at once, so the whole batch takes about as long as the longest quest. Video and activity quests run alongside them too. Stream quests still take turns, because Discord only tracks one active stream.
+
+This is a little riskier, because Discord sees several games running at once. It is off by default.
+
 | Quest type | What happens |
 |---|---|
 | Watch video (desktop / mobile) | Sends video progress, never faster than real time since you accepted the quest |
