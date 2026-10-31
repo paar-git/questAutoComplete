@@ -1,0 +1,10 @@
+.vc-quest-running {
+    color: var(--status-positive);
+    animation: vc-quest-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes vc-quest-pulse {
+    50% {
+        opacity: 0.45;
+    }
+}
