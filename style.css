@@ -1,3 +1,8 @@
+/* Extra panel buttons overflow the account strip unless it is allowed to shrink. */
+[class*="panels"] [class*="accountPopoutButtonWrapper"] {
+    min-width: 0;
+}
+
 .vc-quest-running {
     color: var(--status-positive);
     animation: vc-quest-pulse 1.5s ease-in-out infinite;
@@ -7,4 +12,21 @@
     50% {
         opacity: 0.45;
     }
+}
+
+.vc-quest-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--interactive-normal, #b5bac1);
+    cursor: pointer;
+}
+
+.vc-quest-fallback:hover {
+    color: var(--interactive-hover, #dbdee1);
 }

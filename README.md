@@ -1,10 +1,13 @@
 # QuestAutoComplete
 
-Adds a button to the chat bar (and to the Vencord Toolbox menu, if that plugin is on) that finishes the Discord quests you have **already accepted**.
+Adds a button next to Mute/Deafen, beside FakeDeafen and MOM FBI (also in the Vencord Toolbox menu, if that plugin is on), that finishes the Discord quests you have **already accepted**.
 
 1. Accept quests in Discover → Quests.
-2. Click the quest button in the chat bar.
-3. Click it again while it runs to stop. Discord keeps any progress already made.
+2. Click the quest button. It says "Activated for N accepted quests" and lists them, or tells you there are no accepted quests.
+3. It turns green and pulses while it works. When every quest is done it turns itself off and tells you.
+4. Click it while it runs to stop early. Discord keeps any progress already made.
+
+The button can be hidden in the plugin settings ("Show the quest button next to Mute/Deafen").
 
 | Quest type | What happens |
 |---|---|

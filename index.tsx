@@ -4,11 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { ChatBarButton, ChatBarButtonFactory } from "@api/ChatButtons";
 import { definePluginSettings } from "@api/Settings";
+import ErrorBoundary from "@components/ErrorBoundary";
 import { Logger } from "@utils/Logger";
-import definePlugin, { IconComponent, OptionType } from "@utils/types";
-import { findLazy } from "@webpack";
+import definePlugin, { OptionType } from "@utils/types";
+import { findComponentByCodeLazy, findLazy } from "@webpack";
 import {
     Alerts,
     ApplicationStreamingStore,
@@ -40,6 +40,12 @@ const MAX_CONSECUTIVE_ERRORS = 8;
 const STALL_WARNING_MS = 3 * 60_000;
 
 const settings = definePluginSettings({
+    showButton: {
+        type: OptionType.BOOLEAN,
+        description: "Show the quest button next to Mute/Deafen",
+        default: true,
+        restartNeeded: true
+    },
     showProgressToasts: {
         type: OptionType.BOOLEAN,
         description: "Show a toast every time a quest's progress goes up (start / finish toasts are always shown)",
@@ -383,14 +389,14 @@ async function start() {
         return;
     }
     if (!quests.length) {
-        toast("No accepted, unfinished quests found. Accept a quest first (Discover → Quests).", "critical");
+        toast("There are no accepted quests. Accept a quest first in Discover → Quests, then click again.", "critical");
         return;
     }
 
     const controller = abortController = new AbortController();
     const { signal } = controller;
     setState({ running: true, current: null, detail: "", done: 0, total: quests.length });
-    toast(`Starting ${quests.length} quest(s)…`);
+    toast(`Activated for ${quests.length} accepted quest${quests.length === 1 ? "" : "s"}: ${quests.map(questName).join(", ")}`, "success");
 
     let completed = 0;
     try {
@@ -405,12 +411,14 @@ async function start() {
                 logger.error(`Failed ${questName(quest)}`, err);
                 toast(`❌ ${questName(quest)}: ${errorText(err)}`, "critical");
             }
-            await sleep(BETWEEN_QUESTS_DELAY, signal);
+            if (quest !== quests[quests.length - 1]) await sleep(BETWEEN_QUESTS_DELAY, signal);
         }
-        toast(`Done: ${completed}/${quests.length} quest(s) completed. Go claim your rewards!`, "success");
+        toast(`Finished: ${completed}/${quests.length} quest${quests.length === 1 ? "" : "s"} completed. Turned off. Go claim your rewards!`, "success");
     } catch (err) {
-        if (!(err instanceof Aborted)) logger.error(err);
-        else toast(`Stopped. ${completed}/${quests.length} completed.`);
+        if (!(err instanceof Aborted)) {
+            logger.error(err);
+            toast(`Stopped because of an error: ${errorText(err)}. Turned off.`, "critical");
+        } else toast(`Stopped. ${completed}/${quests.length} completed. Turned off.`);
     } finally {
         if (abortController === controller) abortController = null;
         runCleanups();
@@ -443,41 +451,73 @@ function onButtonClick() {
 
 // ---------------------------------------------------------------- UI
 
-const QuestIcon: IconComponent = ({ height = 20, width = 20, className }) => (
-    <svg width={width} height={height} viewBox="0 0 24 24" className={className}>
-        <path
-            fill="currentColor"
-            d="M7.5 2A2.5 2.5 0 0 0 5 4.5v15A2.5 2.5 0 0 0 7.5 22h9a2.5 2.5 0 0 0 2.5-2.5v-11L12.5 2h-5ZM12 3.5 17.5 9H13a1 1 0 0 1-1-1V3.5ZM8 13h8v1.5H8V13Zm0 3.5h5V18H8v-1.5Z"
-        />
-    </svg>
-);
+const PanelButton = findComponentByCodeLazy(".GREEN,positionKeyStemOverride:");
 
-const QuestButton: ChatBarButtonFactory = ({ isMainChat }) => {
+function QuestIcon() {
+    return (
+        <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" className={state.running ? "vc-quest-running" : undefined}>
+            <path
+                fill="currentColor"
+                d="M7.5 2A2.5 2.5 0 0 0 5 4.5v15A2.5 2.5 0 0 0 7.5 22h9a2.5 2.5 0 0 0 2.5-2.5v-11L12.5 2h-5ZM12 3.5 17.5 9H13a1 1 0 0 1-1-1V3.5ZM8 13h8v1.5H8V13Zm0 3.5h5V18H8v-1.5Z"
+            />
+        </svg>
+    );
+}
+
+function QuestButton(props: { nameplate?: any; }) {
     const s = useRunState();
-    if (!isMainChat) return null;
 
     const tooltip = s.running
-        ? `Completing quests (${s.done}/${s.total}) — ${s.current ?? "…"} ${s.detail}. Click to stop.`
+        ? `Quests ON (${s.done}/${s.total}): ${s.current ?? "…"} ${s.detail}. Click to stop.`
         : "Complete accepted quests";
 
+    if (!(PanelButton as any).$$vencordGetWrappedComponent?.()) {
+        return (
+            <button type="button" className="vc-quest-fallback" title={tooltip} onClick={onButtonClick}>
+                <QuestIcon />
+            </button>
+        );
+    }
+
     return (
-        <ChatBarButton tooltip={tooltip} onClick={onButtonClick}>
-            <QuestIcon className={s.running ? "vc-quest-running" : undefined} />
-        </ChatBarButton>
+        <PanelButton
+            tooltipText={tooltip}
+            icon={QuestIcon}
+            role="switch"
+            aria-checked={s.running}
+            plated={props?.nameplate != null}
+            onClick={onButtonClick}
+        />
     );
-};
+}
 
 export default definePlugin({
     name: "QuestAutoComplete",
-    description: "Adds a chat-bar button that completes the Discord quests you have already accepted (video, play, stream and activity quests).",
+    description: "Adds a button next to Mute/Deafen that completes the Discord quests you have already accepted (video, play, stream and activity quests), then turns itself off.",
     authors: [{ name: "Pargit", id: 786610113447723020n }],
     tags: ["Utility"],
     settings,
+    managedStyle,
 
-    chatBarButton: {
-        icon: QuestIcon,
-        render: QuestButton
-    },
+    patches: [
+        {
+            // The mic/deafen button row that FakeDeafen and MOM FBI also add to.
+            // Captures the buttons other plugins already put there and places ours right after theirs.
+            find: "#{intl::USER_PROFILE_ACCOUNT_POPOUT_BUTTON_A11Y_LABEL}",
+            predicate: () => settings.store.showButton,
+            replacement: {
+                match: /children:\[((?:Vencord\.Plugins\.plugins\[".+?"\]\.\i\(arguments\[0\]\),)*)(?=\(0,\i\.jsxs?\)\(\i,\{accountContainerRef:)/,
+                replace: (_, prepended: string) => {
+                    const ours = "$self.QuestButton(arguments[0]),";
+                    const calls = prepended.match(/Vencord\.Plugins\.plugins\[".+?"\]\.\w+\(arguments\[0\]\),/g) ?? [];
+                    const neighbour = [...calls].reverse().find(c => c.includes('["MOM FBI"]') || c.includes('["FakeDeafen"]'));
+                    return neighbour
+                        ? `children:[${prepended.replace(neighbour, neighbour + ours)}`
+                        : `children:[${ours}${prepended}`;
+                }
+            }
+        }
+    ],
 
     toolboxActions() {
         const s = useRunState();
@@ -490,9 +530,9 @@ export default definePlugin({
         );
     },
 
-    managedStyle,
-
     stop() {
         stop();
-    }
+    },
+
+    QuestButton: ErrorBoundary.wrap(QuestButton, { noop: true })
 });
