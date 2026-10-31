@@ -148,6 +148,13 @@ function getTaskName(quest: any): TaskName | undefined {
     return SUPPORTED_TASKS.find(t => tasks[t] != null);
 }
 
+// Discord moved the game from config.application into each task's applications list.
+function getQuestAppId(quest: any, task: TaskName): string {
+    const id = getTaskConfig(quest)?.tasks?.[task]?.applications?.[0]?.id ?? quest.config.application?.id;
+    if (!id) throw new Error("This quest has no game attached");
+    return id;
+}
+
 function questName(quest: any): string {
     return quest.config?.messages?.questName ?? quest.id;
 }
@@ -243,7 +250,7 @@ function waitForHeartbeats(quest: any, task: TaskName, needed: number, signal: A
 }
 
 async function doPlay(quest: any, needed: number, done: number, signal: AbortSignal) {
-    const appId = quest.config.application.id;
+    const appId = getQuestAppId(quest, "PLAY_ON_DESKTOP");
     const res = await request("get", { url: `/applications/public?application_ids=${appId}` }, signal);
     const app = res?.body?.[0];
     if (!app) throw new Error("Could not look up the quest's game");
@@ -297,7 +304,8 @@ async function doStream(quest: any, needed: number, done: number, signal: AbortS
     const store = ApplicationStreamingStore as any;
     const real = store.getStreamerActiveStreamMetadata;
     const pid = Math.floor(Math.random() * 30000) + 1000;
-    const spoofed = () => ({ id: quest.config.application.id, pid, sourceName: null });
+    const appId = getQuestAppId(quest, "STREAM_ON_DESKTOP");
+    const spoofed = () => ({ id: appId, pid, sourceName: null });
     store.getStreamerActiveStreamMetadata = spoofed;
 
     const restore = () => {
